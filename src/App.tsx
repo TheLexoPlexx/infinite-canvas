@@ -38,7 +38,7 @@ export interface ReactInfiniteCanvasProps {
   minZoom?: number;
   maxZoom?: number;
   panOnScroll?: boolean;
-  zoomScale?: number;
+  zoomScaleFactor?: number;
   scrollBarConfig?: {
     renderScrollBar?: boolean;
     startingPosition?: {
@@ -170,6 +170,7 @@ const ReactInfiniteCanvasRenderer = memo(
     minZoom = ZOOM_CONFIGS.DEFAULT_MIN_ZOOM,
     maxZoom = ZOOM_CONFIGS.DEFAULT_MAX_ZOOM,
     panOnScroll = true,
+    zoomScaleFactor = 1,
     customComponents = [],
     scrollBarConfig = {},
     backgroundConfig = {},
@@ -439,25 +440,17 @@ const ReactInfiniteCanvasRenderer = memo(
         if (shouldBlockEvent({ ...event, target: event.target as HTMLElement })) {
           return;
         }
-        if (event.ctrlKey) {
-          event.preventDefault();
-          if (!d3Selection.current) return;
-          const currentZoom = d3Selection.current.property("__zoom").k || 1;
-          const nextZoom = currentZoom * 2 ** (-event.deltaY * 0.01);
-          // Pass the selection (d3Selection.current) to d3Zoom.scaleTo
-          d3Zoom.scaleTo(d3Selection.current as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>, nextZoom, pointer(event));
-        } else if (panOnScroll) {
-          event.preventDefault();
-          if (!d3Selection.current) return;
+
+        event.preventDefault();
+        if (!d3Selection.current) return;
+
+        if (!event.ctrlKey && panOnScroll) {
           const scrollDeltaValue = { deltaX: event.deltaX, deltaY: event.deltaY };
           scrollBarRef.current?.onScrollDeltaChangeHandler(scrollDeltaValue);
           onScrollDeltaHandler(scrollDeltaValue);
         } else {
-          event.preventDefault();
-          if (!d3Selection.current) return;
           const currentZoom = d3Selection.current.property("__zoom").k || 1;
-          const nextZoom = currentZoom * 2 ** (-event.deltaY * 0.01);
-          // Pass the selection (d3Selection.current) to d3Zoom.scaleTo
+          const nextZoom = currentZoom * 2 ** (-event.deltaY * (0.01 * zoomScaleFactor));
           d3Zoom.scaleTo(d3Selection.current as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>, nextZoom, pointer(event));
         }
       }, { passive: false, capture: true });
