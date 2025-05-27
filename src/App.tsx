@@ -39,7 +39,7 @@ export interface ReactInfiniteCanvasProps {
   maxZoom?: number;
   panOnScroll?: boolean;
   invertScroll?: boolean;
-  zoomScaleFactor?: number;
+  zoomScale?: number;
   scrollBarConfig?: {
     renderScrollBar?: boolean;
     startingPosition?: {
@@ -171,8 +171,8 @@ const ReactInfiniteCanvasRenderer = memo(
     minZoom = ZOOM_CONFIGS.DEFAULT_MIN_ZOOM,
     maxZoom = ZOOM_CONFIGS.DEFAULT_MAX_ZOOM,
     panOnScroll = true,
-    zoomScaleFactor = ZOOM_CONFIGS.ZOOM_SCALE_FACTOR,
-    invertScroll = ZOOM_CONFIGS.ZOOM_SCALE_FACTOR_INVERT,
+    zoomScale = ZOOM_CONFIGS.ZOOM_SCALE,
+    invertScroll = false,
     customComponents = [],
     scrollBarConfig = {},
     backgroundConfig = {},
@@ -409,11 +409,24 @@ const ReactInfiniteCanvasRenderer = memo(
       // We configure d3Zoom with .filter(), .on("zoom", ...), and .on("end", ...).
       d3Zoom
         .filter((event: any) => {
-          if (event.type === "mousedown" && !isUserPressed.current) {
+          // Only set grabbing state for left mouse button down
+          if (event.type === "mousedown" && event.button === 0 && !isUserPressed.current) {
             isUserPressed.current = true;
             onMouseDown();
           }
-          return event.ctrlKey || event.type !== "wheel";
+          // Allow pan with left button (if not wheeling), and zoom with ctrlKey or wheel.
+          // This needs to allow mousedown for right-click to pass through for context menu.
+          if (event.type === "wheel") return true; // Always allow wheel events for our custom handler
+          if (event.ctrlKey) return true; // Allow ctrlKey for zoom regardless of button
+
+          // For mousedown events, only allow left button to initiate d3-zoom's own pan/drag.
+          // Other mousedown events (middle, right) should not be captured by d3-zoom here
+          // to allow default browser behavior (like context menu for right-click).
+          if (event.type === "mousedown") {
+            return event.button === 0; // Only left button mousedown should be handled by d3-zoom drag
+          }
+
+          return true; // Allow other events like mousemove, mouseup etc. if they are part of a d3-zoom gesture
         })
         .on("zoom", (event: any) => {
           const nativeTarget = (event.sourceEvent as MouseEvent)?.target as HTMLElement;
@@ -443,18 +456,31 @@ const ReactInfiniteCanvasRenderer = memo(
           return;
         }
 
-        event.preventDefault();
-        if (!d3Selection.current) return;
+        const effectiveDeltaY = invertScroll ? event.deltaY : -event.deltaY;
+        const effectiveDeltaX = invertScroll ? event.deltaX : -event.deltaX;
+        const zoomScaleFactor = zoomScale * 0.01;
 
-        if (!event.ctrlKey && panOnScroll) {
-          const scrollDeltaValue = { deltaX: event.deltaX, deltaY: event.deltaY };
+        if (event.ctrlKey) {
+          event.preventDefault();
+          if (!d3Selection.current) return;
+          const currentZoom = d3Selection.current.property("__zoom").k || 1;
+          // Use effectiveDeltaY for zoom calculation
+          const nextZoom = currentZoom * 2 ** (-effectiveDeltaY * zoomScaleFactor);
+          d3Zoom.scaleTo(d3Selection.current as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>, nextZoom, pointer(event));
+        } else if (panOnScroll) {
+          event.preventDefault();
+          if (!d3Selection.current) return;
+          // Use effectiveDeltaX and effectiveDeltaY for panning
+          const scrollDeltaValue = { deltaX: effectiveDeltaX, deltaY: effectiveDeltaY };
           scrollBarRef.current?.onScrollDeltaChangeHandler(scrollDeltaValue);
           onScrollDeltaHandler(scrollDeltaValue);
         } else {
+          event.preventDefault();
+          if (!d3Selection.current) return;
           const currentZoom = d3Selection.current.property("__zoom").k || 1;
-          const nextZoom = currentZoom * 2 ** (-event.deltaY * (0.01 * zoomScaleFactor));
-          const realZoom = invertScroll ? 1 / nextZoom : nextZoom;
-          d3Zoom.scaleTo(d3Selection.current as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>, realZoom, pointer(event));
+          // Use effectiveDeltaY for zoom calculation
+          const nextZoom = currentZoom * 2 ** (-effectiveDeltaY * zoomScaleFactor);
+          d3Zoom.scaleTo(d3Selection.current as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>, nextZoom, pointer(event));
         }
       }, { passive: false, capture: true });
 
@@ -467,7 +493,7 @@ const ReactInfiniteCanvasRenderer = memo(
         // Pass a function that always returns true to effectively remove the filter's effect.
         d3Zoom.on("zoom", null).on("end", null).filter(() => true);
       };
-    }, [d3Zoom, onZoom, isSafariClient, panOnScroll, onMouseDown, onScrollDeltaHandler]); // Dependencies for the main D3 effect
+    }, [d3Zoom, onZoom, isSafariClient, panOnScroll, onMouseDown, onScrollDeltaHandler, invertScroll, zoomScale]); // Added invertScroll and zoomScale to dependencies
 
     // 3. useImperativeHandle must come after the functions it uses are defined.
     useImperativeHandle(forwardedRef, () => ({
