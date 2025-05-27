@@ -2,19 +2,18 @@
   "name": "react-infinite-canvas",
   "version": "3.4.1",
   "description": "An Infinite Canvas Component for React where you can place your component anywhere on the canvas with zoom in, zoom out and panning functionality. It also supports custom components to control the canvas.",
-  "main": "./dist/react-infinite-canvas.umd.js",
-  "module": "./dist/react-infinite-canvas.es.js",
-  "types": "./dist/main.d.ts",
   "scripts": {
     "build": "vite build",
     "dev": "vite",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "exports": {
-    "import": "./dist/react-infinite-canvas.es.js",
-    "require": "./dist/react-infinite-canvas.umd.js",
-    "types": "./dist/main.d.ts",
-    "default": "./dist/react-infinite-canvas.es.js"
+    ".": {
+      "types": "./dist/main.d.ts",
+      "import": "./dist/react-infinite-canvas.es.js",
+      "require": "./dist/react-infinite-canvas.umd.js",
+      "default": "./dist/react-infinite-canvas.es.js"
+    }
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx,json}": [
@@ -44,8 +43,8 @@
   "author": "Karthik Aravind",
   "license": "MIT",
   "peerDependencies": {
-    "react": ">=17 <20",
-    "react-dom": ">=17 <20"
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "1.9.3",
@@ -56,8 +55,8 @@
     "@types/d3-selection": "^3.0.10",
     "@types/d3-transition": "^3.0.9",
     "@types/d3-zoom": "^3.0.8",
-    "@types/react": ">=17 <20",
-    "@types/react-dom": ">=17 <20",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "4.3.4",
     "d3-selection": "3.0.0",
     "d3-zoom": "3.0.0",

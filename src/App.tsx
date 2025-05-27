@@ -1,5 +1,4 @@
 import React, {
-  forwardRef,
   memo,
   useCallback,
   useEffect,
@@ -7,7 +6,9 @@ import React, {
   useMemo,
   useState,
   useRef,
-  type JSX
+  type JSX,
+  type ForwardedRef,
+  type RefObject
 } from "react";
 import { pointer, select, type Selection } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom";
@@ -31,16 +32,13 @@ import {
 import styles from "./App.module.css";
 import { ScrollBar } from "./components/ScrollBar/scrollbar";
 
-const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-const TIME_TO_WAIT = isSafari ? 600 : 300;
-
 export interface ReactInfiniteCanvasProps {
   children: JSX.Element;
   className?: string;
-  ref?: React.ForwardedRef<ReactInfiniteCanvasHandle>;
   minZoom?: number;
   maxZoom?: number;
   panOnScroll?: boolean;
+  zoomScale?: number;
   scrollBarConfig?: {
     renderScrollBar?: boolean;
     startingPosition?: {
@@ -81,7 +79,7 @@ export interface CanvasState {
     undefined
   >;
   currentPosition: { k: number; x: number; y: number };
-  d3Zoom: ZoomBehavior<HTMLDivElement | SVGAElement, unknown>;
+  d3Zoom: ZoomBehavior<SVGSVGElement | HTMLDivElement, unknown>;
 }
 
 export type ReactInfiniteCanvasHandle = {
@@ -140,45 +138,50 @@ export type ReactInfiniteCanvasHandle = {
 
 interface ReactInfiniteCanvasRendererProps extends ReactInfiniteCanvasProps {
   children: React.ReactElement<object, string>;
-  innerRef: React.ForwardedRef<ReactInfiniteCanvasHandle>;
+  forwardedRef: ForwardedRef<ReactInfiniteCanvasHandle>;
+  contentWrapperRef: RefObject<HTMLDivElement | null>;
 }
 
-export const ReactInfiniteCanvas: React.FC<ReactInfiniteCanvasProps> =
-  forwardRef<ReactInfiniteCanvasHandle, ReactInfiniteCanvasProps>(
-    ({ children, ...restProps }, ref) => {
-      const wrapperRef = React.useRef<HTMLDivElement>(null);
-      return (
-        <ReactInfiniteCanvasRenderer innerRef={ref} {...restProps}>
-          <div
-            ref={wrapperRef}
-            style={{ width: "max-content", height: "max-content" }}
-          >
-            {children}
-          </div>
-        </ReactInfiniteCanvasRenderer>
-      );
-    }
-  );
+export const ReactInfiniteCanvas = React.forwardRef<ReactInfiniteCanvasHandle, ReactInfiniteCanvasProps>(
+  (props, ref) => {
+    const wrapperRef = React.useRef<HTMLDivElement>(null);
+    return (
+      <ReactInfiniteCanvasRenderer
+        {...props}
+        forwardedRef={ref}
+        contentWrapperRef={wrapperRef}
+      >
+        <div
+          ref={wrapperRef}
+          style={{ width: "max-content", height: "max-content" }}
+        >
+          {props.children}
+        </div>
+      </ReactInfiniteCanvasRenderer>
+    );
+  }
+);
+ReactInfiniteCanvas.displayName = "ReactInfiniteCanvas";
 
 const ReactInfiniteCanvasRenderer = memo(
   ({
     children,
     className = "",
-    innerRef: ref,
     minZoom = ZOOM_CONFIGS.DEFAULT_MIN_ZOOM,
     maxZoom = ZOOM_CONFIGS.DEFAULT_MAX_ZOOM,
     panOnScroll = true,
     customComponents = [],
     scrollBarConfig = {},
     backgroundConfig = {},
-    onCanvasMount = () => {}
+    onCanvasMount = () => { },
+    onZoom,
+    forwardedRef,
+    contentWrapperRef
   }: ReactInfiniteCanvasRendererProps) => {
-    const canvasWrapperRef = useRef<HTMLDivElement | null>(null);
+    const canvasWrapperRef = useRef<HTMLDivElement>(null);
     const canvasWrapperBounds = useRef<DOMRect | null>(null);
-    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-    const canvasRef = useRef<any>(null);
-    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-    const zoomContainerRef = useRef<any>(null);
+    const canvasRef = useRef<SVGSVGElement | HTMLDivElement | null>(null);
+    const zoomContainerRef = useRef<SVGGElement | HTMLDivElement | null>(null);
     const scrollBarRef = useRef<{
       onScrollDeltaChangeHandler: (scrollDelta: {
         deltaX: number;
@@ -186,18 +189,28 @@ const ReactInfiniteCanvasRenderer = memo(
       }) => void;
       resetScrollPos: () => void;
     }>(null);
-    const flowRendererRef = (
-      children as React.ReactElement & { ref: React.RefObject<HTMLElement> }
-    ).ref;
+    const flowRendererRef = contentWrapperRef;
     const isUserPressed = useRef<boolean | null>(null);
 
+    const [isSafariClient, setIsSafariClient] = useState(false);
+    const [timeToWaitClient, setTimeToWaitClient] = useState(300);
+
+    useEffect(() => {
+      const navigatorExists = typeof window !== 'undefined' && typeof window.navigator !== 'undefined';
+      const safariAgent = navigatorExists && /^((?!chrome|android).)*safari/i.test(window.navigator.userAgent);
+      setIsSafariClient(!!safariAgent);
+      setTimeToWaitClient(safariAgent ? 600 : 300);
+    }, []);
+
     const d3Zoom = useMemo(() => {
-      return zoom<SVGAElement | HTMLDivElement, unknown>().scaleExtent([
+      return zoom<SVGSVGElement | HTMLDivElement, unknown>().scaleExtent([
         minZoom,
         maxZoom
       ]);
     }, [maxZoom, minZoom]);
-    const d3Selection = useRef(select(canvasRef.current).call(d3Zoom));
+
+    // Initialize d3Selection with null. It will be set in useEffect.
+    const d3Selection = useRef<Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined> | null>(null);
 
     const [zoomTransform, setZoomTransform] = useState({
       translateX: 0,
@@ -205,191 +218,20 @@ const ReactInfiniteCanvasRenderer = memo(
       scale: 1
     });
 
-    useImperativeHandle(ref, () => ({
-      scrollNodeToCenter: ({
-        nodeElement,
-        offset,
-        scale,
-        shouldUpdateMaxScale,
-        maxScale,
-        transitionDuration
-      }: {
-        nodeElement?: HTMLElement | undefined;
-        offset?: { x: number; y: number };
-        scale?: number;
-        shouldUpdateMaxScale?: boolean;
-        maxScale?: number;
-        transitionDuration?: number;
-      }) =>
-        scrollNodeHandler({
-          nodeElement,
-          offset,
-          scale,
-          shouldUpdateMaxScale,
-          maxScale,
-          transitionDuration,
-          position: SCROLL_NODE_POSITIONS.CENTER_CENTER
-        }),
-      scrollNodeHandler,
-      scrollContentHorizontallyCenter,
-      fitContentToView,
-      getCanvasState
-    }));
-
-    // biome-ignore lint/correctness/useExhaustiveDependencies: <explanation>
-    useEffect(function zoomAndPanHandler() {
-      d3Selection.current = select(canvasRef.current).call(d3Zoom);
-      const zoomNode = select(zoomContainerRef.current);
-      canvasWrapperBounds.current = canvasWrapperRef.current
-        ? canvasWrapperRef.current.getBoundingClientRect()
-        : null;
-
-      d3Zoom
-        .filter((event: { type: string; ctrlKey: boolean }) => {
-          if (event.type === "mousedown" && !isUserPressed.current) {
-            isUserPressed.current = true;
-            onMouseDown();
-          }
-
-          return event.ctrlKey || event.type !== "wheel";
-        })
-        .on(
-          "zoom",
-          (event: {
-            sourceEvent: { ctrlKey: boolean };
-            type: string;
-            transform: { k: number; x: number; y: number };
-          }) => {
-            const nativeTarget = (event.sourceEvent as MouseEvent)
-              ?.target as HTMLElement;
-            if (nativeTarget && shouldBlockPanEvent({ target: nativeTarget }))
-              return;
-            if (event.sourceEvent?.ctrlKey === false && event.type === "zoom") {
-              canvasWrapperRef.current?.classList.add(styles.panning);
-            }
-
-            const zoomTransform = event.transform;
-            const { x: translateX, y: translateY, k: scale } = zoomTransform;
-            const div = zoomContainerRef.current;
-            setZoomTransform({ translateX, translateY, scale });
-            if (isSafari && div) {
-              div.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
-            } else {
-              zoomNode.attr(
-                "transform",
-                `translate(${translateX},${translateY}) scale(${scale})`
-              );
-            }
-          }
-        );
-
-      d3Zoom.on("end", () => {
-        isUserPressed.current = false;
-        canvasWrapperRef.current?.classList.remove(styles.panning);
-      });
-
-      onCanvasMount({
-        scrollNodeToCenter: ({
-          nodeElement,
-          offset,
-          scale,
-          shouldUpdateMaxScale,
-          maxScale,
-          transitionDuration
-        }: {
-          nodeElement?: HTMLElement;
-          offset?: { x: number; y: number };
-          scale?: number;
-          shouldUpdateMaxScale?: boolean;
-          maxScale?: number;
-          transitionDuration?: number;
-        }) =>
-          scrollNodeHandler({
-            nodeElement,
-            offset,
-            scale,
-            shouldUpdateMaxScale,
-            maxScale,
-            transitionDuration,
-            position: SCROLL_NODE_POSITIONS.CENTER_CENTER
-          }),
-        scrollNodeHandler,
-        scrollContentHorizontallyCenter,
-        fitContentToView,
-        getCanvasState
-      });
-    }, []);
-
-    d3Selection.current
-      .call(zoom)
-      // Override the default wheel event listener
-      .on(
-        "wheel.zoom",
-        (event: {
-          preventDefault: () => void;
-          ctrlKey: boolean;
-          metaKey: boolean;
-          deltaY: number;
-          deltaX: number;
-          target: EventTarget;
-        }) => {
-          if (
-            shouldBlockEvent({ ...event, target: event.target as HTMLElement })
-          ) {
-            return;
-          }
-          event.preventDefault();
-
-          const currentZoom = d3Selection.current.property("__zoom").k || 1;
-
-          if (panOnScroll && !event.ctrlKey) {
-            const scrollDeltaValue = {
-              deltaX: event.deltaX,
-              deltaY: event.deltaY
-            };
-            scrollBarRef.current?.onScrollDeltaChangeHandler(scrollDeltaValue);
-            onScrollDeltaHandler(scrollDeltaValue);
-          } else {
-            const nextZoom = currentZoom * 2 ** (-event.deltaY * 0.01);
-            const selection = d3Selection.current;
-            if (selection) {
-              d3Zoom.scaleTo(
-                selection as Selection<
-                  SVGAElement | HTMLDivElement,
-                  unknown,
-                  null,
-                  undefined
-                >,
-                nextZoom,
-                pointer(event)
-              );
-            }
-          }
-        },
-        { passive: false, capture: true }
-      );
-
-    const onScrollDeltaHandler = (scrollDelta: {
-      deltaX: number;
-      deltaY: number;
-    }) => {
+    // 1. Define ALL handler functions with useCallback and correct dependencies
+    const onScrollDeltaHandler = useCallback((scrollDelta: { deltaX: number; deltaY: number; }) => {
+      if (!d3Selection.current) return;
       const currentZoom = d3Selection.current.property("__zoom").k || 1;
       const selection = d3Selection.current;
       if (selection) {
         d3Zoom.translateBy(
-          selection as Selection<
-            SVGAElement | HTMLDivElement,
-            unknown,
-            null,
-            undefined
-          >,
+          selection as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>,
           -(scrollDelta.deltaX / currentZoom),
           -(scrollDelta.deltaY / currentZoom)
         );
       }
-    };
+    }, [d3Zoom]); // d3Zoom is stable due to useMemo
 
-    // biome-ignore lint/correctness/useExhaustiveDependencies: <explanation>
     const fitContentToView = useCallback(
       function fitContentHandler({
         duration = 500,
@@ -406,206 +248,251 @@ const ReactInfiniteCanvasRenderer = memo(
       }) {
         requestIdleCallback(
           () => {
-            if (!flowRendererRef.current) return;
+            if (!flowRendererRef.current || !canvasRef.current || !d3Selection.current) return;
             const canvasNode = select(canvasRef.current);
-            const contentBounds =
-              flowRendererRef.current.getBoundingClientRect();
+            const contentBounds = flowRendererRef.current.getBoundingClientRect();
             const currentZoom = d3Selection.current.property("__zoom").k || 1;
             const containerBounds = canvasRef.current?.getBoundingClientRect();
-            const { width: containerWidth = 0, height: containerHeight = 0 } =
-              containerBounds || {};
+            const { width: containerWidth = 0, height: containerHeight = 0 } = containerBounds || {};
             const scaleDiff = 1 / currentZoom;
             const contentWidth = contentBounds.width * scaleDiff;
             const contentHeight = contentBounds.height * scaleDiff;
             const heightRatio = containerHeight / contentHeight;
             const widthRatio = containerWidth / contentWidth;
-
             const newScale =
               scale ??
-              clampValue({
-                value: Math.min(
-                  maxZoomLimit,
-                  Math.min(heightRatio, widthRatio)
-                ),
-                min: minZoom,
-                max: maxZoom
-              });
-
-            // below code calculates the translateX and translateY values to
-            // center the content horizontally and if disableVerticalCenter is false center the content vertically
+              clampValue({ value: Math.min(maxZoomLimit, Math.min(heightRatio, widthRatio)), min: minZoom, max: maxZoom });
             const newWidth = containerWidth - contentWidth * newScale;
             const newHeight = containerHeight - contentHeight * newScale;
-
-            const canCenterVertically =
-              !disableVerticalCenter && heightRatio > widthRatio;
-
+            const canCenterVertically = !disableVerticalCenter && heightRatio > widthRatio;
             const baseTranslateX = newWidth / 2;
             const baseTranslateY = canCenterVertically ? newHeight / 2 : 0;
-
             const translateX = baseTranslateX + offset.x;
             const translateY = baseTranslateY + offset.y;
-
-            const newTransform = zoomIdentity
-              .translate(translateX, translateY)
-              .scale(newScale);
+            const newTransform = zoomIdentity.translate(translateX, translateY).scale(newScale);
             setZoomTransform({ translateX, translateY, scale: newScale });
             scrollBarRef.current?.resetScrollPos();
-
-            canvasNode
-              .transition()
-              .duration(duration)
-              .call(d3Zoom.transform, newTransform);
+            canvasNode.transition().duration(duration).call(d3Zoom.transform as any, newTransform);
           },
-          { timeout: TIME_TO_WAIT }
+          { timeout: timeToWaitClient }
         );
       },
-      [maxZoom, minZoom]
+      [minZoom, maxZoom, flowRendererRef, canvasRef, timeToWaitClient, d3Zoom, scrollBarRef] // Added setZoomTransform if it were used directly, but it's via newTransform
     );
 
-    const scrollNodeHandler = ({
-      nodeElement,
-      offset = { x: 0, y: 0 },
-      scale,
-      shouldUpdateMaxScale = true,
-      maxScale,
-      transitionDuration = 300,
-      position = SCROLL_NODE_POSITIONS.TOP_CENTER
-    }: {
-      nodeElement?: HTMLElement;
-      offset?: { x: number; y: number };
-      scale?: number;
-      shouldUpdateMaxScale?: boolean;
-      maxScale?: number;
-      transitionDuration?: number;
-      position?: string;
-    }) => {
-      requestIdleCallback(
-        () => {
-          if (!nodeElement) return;
-          const zoomLevel = d3Selection.current.property("__zoom");
-          const {
-            k: currentScale,
-            x: currentTranslateX,
-            y: currentTranslateY
-          } = zoomLevel;
-          const canvasNode = select(canvasRef.current);
-
-          const getUpdatedScale = () => {
-            const getClampedScale = (scale: number) => {
-              if (!maxScale) return scale;
-              return Math.min(maxScale, scale);
+    const scrollNodeHandler = useCallback(
+      ({
+        nodeElement,
+        offset = { x: 0, y: 0 },
+        scale,
+        shouldUpdateMaxScale = true,
+        maxScale,
+        transitionDuration = 300,
+        position = SCROLL_NODE_POSITIONS.TOP_CENTER
+      }: {
+        nodeElement?: HTMLElement;
+        offset?: { x: number; y: number };
+        scale?: number;
+        shouldUpdateMaxScale?: boolean;
+        maxScale?: number;
+        transitionDuration?: number;
+        position?: string;
+      }) => {
+        requestIdleCallback(
+          () => {
+            if (!nodeElement || !canvasRef.current || !d3Selection.current) return;
+            const zoomLevel = d3Selection.current.property("__zoom");
+            const { k: currentScale, x: currentTranslateX, y: currentTranslateY } = zoomLevel;
+            const canvasNode = select(canvasRef.current);
+            const getUpdatedScale = () => {
+              const getClampedScale = (s: number) => (!maxScale ? s : Math.min(maxScale, s));
+              if (!scale) return getClampedScale(currentScale);
+              let updatedScale = scale;
+              if (shouldUpdateMaxScale) updatedScale = Math.max(scale, currentScale);
+              return getClampedScale(updatedScale);
             };
+            const updatedScale = getUpdatedScale();
+            const svgBounds = canvasRef.current!.getBoundingClientRect();
+            const nodeBounds = nodeElement.getBoundingClientRect();
+            const { updatedX, updatedY } = getUpdatedNodePosition({
+              position, svgBounds, nodeBounds, currentTranslateX, currentTranslateY, currentScale, updatedScale, customOffset: { x: offset.x, y: offset.y }
+            });
+            const newTransform = zoomIdentity.translate(updatedX, updatedY).scale(updatedScale);
+            canvasNode.transition().duration(transitionDuration).call(d3Zoom.transform as any, newTransform);
+          },
+          { timeout: timeToWaitClient }
+        );
+      },
+      [canvasRef, timeToWaitClient, d3Zoom] // minZoom, maxZoom not directly used but affect maxScale behavior if it's relative
+    );
 
-            if (!scale) return getClampedScale(currentScale);
-            let updatedScale = scale;
-            if (shouldUpdateMaxScale) {
-              updatedScale = Math.max(scale, currentScale);
-            }
-            return getClampedScale(updatedScale);
-          };
+    const scrollContentHorizontallyCenter = useCallback(
+      ({
+        offset = 0,
+        transitionDuration = 300
+      }: {
+        offset?: number;
+        transitionDuration?: number;
+      }) => {
+        requestIdleCallback(
+          () => {
+            if (!flowRendererRef.current || !canvasRef.current || !d3Selection.current) return;
+            const zoomLevel = d3Selection.current.property("__zoom");
+            const { k: scale, y: translateY } = zoomLevel;
+            const canvasNode = select(canvasRef.current);
+            const svgBounds = canvasRef.current!.getBoundingClientRect();
+            const nodeBounds = flowRendererRef.current.getBoundingClientRect();
+            const scaleDiff = 1 / scale;
+            const nodeBoundsWidth = nodeBounds.width * scaleDiff;
+            const updatedX = (svgBounds.width - nodeBoundsWidth * scale) / 2 + offset;
+            setZoomTransform(prev => ({ ...prev, translateX: updatedX })); // Use functional update for zoomTransform
+            const newTransform = zoomIdentity.translate(updatedX, translateY).scale(scale);
+            canvasNode.transition().duration(transitionDuration).call(d3Zoom.transform as any, newTransform);
+          },
+          { timeout: timeToWaitClient }
+        );
+      },
+      [flowRendererRef, canvasRef, timeToWaitClient, d3Zoom] // zoomTransform was a dep, now using functional update.
+    );
 
-          const updatedScale = getUpdatedScale();
-
-          // calculating svgBounds again because its width might be different if rightPanel is opened
-          const svgBounds = canvasRef.current.getBoundingClientRect();
-          const nodeBounds = nodeElement.getBoundingClientRect();
-          const { updatedX, updatedY } = getUpdatedNodePosition({
-            position,
-            svgBounds,
-            nodeBounds,
-            currentTranslateX,
-            currentTranslateY,
-            currentScale,
-            updatedScale,
-            customOffset: { x: offset.x, y: offset.y }
-          });
-
-          const newTransform = zoomIdentity
-            .translate(updatedX, updatedY)
-            .scale(updatedScale);
-
-          canvasNode
-            // @ts-ignore
-            .transition()
-            .duration(transitionDuration)
-            .call(d3Zoom.transform, newTransform);
-        },
-        { timeout: TIME_TO_WAIT }
-      );
-    };
-
-    const scrollContentHorizontallyCenter = ({
-      offset = 0,
-      transitionDuration = 300
-    }: {
-      offset?: number;
-      transitionDuration?: number;
-    }) => {
-      if (!flowRendererRef.current) return;
-      requestIdleCallback(
-        () => {
-          const zoomLevel = d3Selection.current.property("__zoom");
-          const { k: scale, y: translateY } = zoomLevel;
-          const canvasNode = select(canvasRef.current);
-
-          // calculating svgBounds again because its width might be different if rightPanel is opened
-          const svgBounds = canvasRef.current.getBoundingClientRect();
-          const nodeBounds = flowRendererRef.current.getBoundingClientRect();
-          const scaleDiff = 1 / scale;
-          const nodeBoundsWidth = nodeBounds.width * scaleDiff;
-
-          const updatedX =
-            (svgBounds.width - nodeBoundsWidth * scale) / 2 + offset;
-
-          setZoomTransform({
-            ...zoomTransform,
-            translateX: updatedX
-          });
-
-          const newTransform = zoomIdentity
-            .translate(updatedX, translateY)
-            .scale(scale);
-
-          canvasNode
-            // @ts-ignore
-            .transition()
-            .duration(transitionDuration)
-            .call(d3Zoom.transform, newTransform);
-        },
-        { timeout: TIME_TO_WAIT }
-      );
-    };
-
-    const getCanvasState = () => {
+    const getCanvasState = useCallback((): CanvasState => {
+      if (!d3Selection.current || !canvasRef.current || !zoomContainerRef.current) {
+        // Return a default or empty state if refs are not ready
+        // This might happen if getCanvasState is called too early.
+        return {
+          canvasNode: select(null as any), // Or handle this case more gracefully
+          zoomNode: select(null as any),
+          currentPosition: { k: 0, x: 0, y: 0 },
+          d3Zoom
+        };
+      }
       return {
-        canvasNode: select(canvasRef.current),
-        zoomNode: select(zoomContainerRef.current),
-        currentPosition: d3Selection.current.property("__zoom"),
+        canvasNode: select(canvasRef.current as SVGSVGElement | HTMLDivElement | null),
+        zoomNode: select(zoomContainerRef.current as SVGGElement | HTMLDivElement | null),
+        currentPosition: d3Selection.current.property("__zoom") as { k: number; x: number; y: number },
         d3Zoom
       };
-    };
+    }, [canvasRef, zoomContainerRef, d3Zoom]);
 
-    const onMouseDown = () => {
+    const onMouseDown = useCallback(() => {
       const bodyElement = document.body;
-
       if (bodyElement) {
-        const mouseDownEvent = new MouseEvent("mousedown", {
-          bubbles: true,
-          cancelable: true,
-          view: window
-        });
-
-        // Dispatch the mousedown event on the body element
+        const mouseDownEvent = new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window });
         bodyElement.dispatchEvent(mouseDownEvent);
       }
-    };
+    }, []);
 
-    const getContainerOffset = useCallback(function offsetHandler(
-      isVertical = true
-    ) {
+    const getContainerOffset = useCallback(function offsetHandler(isVertical = true) {
       const bounds = canvasWrapperBounds.current;
       return isVertical ? (bounds?.top ?? 0) : (bounds?.left ?? 0);
     }, []);
+
+    // 2. useEffect for D3 setup, event listeners, and onZoom prop handling
+    useEffect(() => {
+      if (!canvasRef.current || !zoomContainerRef.current) return;
+
+      // Create the D3 selection from canvasRef and apply the zoom behavior.
+      const selection = select(canvasRef.current as SVGSVGElement | HTMLDivElement);
+      selection.call(d3Zoom); // Apply the zoom behavior to the selection.
+      d3Selection.current = selection; // Store the configured selection in the ref.
+
+      const zoomNodeSelection = select(zoomContainerRef.current) as Selection<SVGGElement | HTMLDivElement, unknown, null, undefined>;
+      canvasWrapperBounds.current = canvasWrapperRef.current?.getBoundingClientRect() ?? null;
+
+      // Use d3Selection.current directly for attaching listeners, after checking it's not null.
+      if (!d3Selection.current) return;
+
+      // The d3Zoom behavior itself handles the main zoom and pan gestures based on events from the element it was .call()ed on.
+      // We configure d3Zoom with .filter(), .on("zoom", ...), and .on("end", ...).
+      d3Zoom
+        .filter((event: any) => {
+          if (event.type === "mousedown" && !isUserPressed.current) {
+            isUserPressed.current = true;
+            onMouseDown();
+          }
+          return event.ctrlKey || event.type !== "wheel";
+        })
+        .on("zoom", (event: any) => {
+          const nativeTarget = (event.sourceEvent as MouseEvent)?.target as HTMLElement;
+          if (nativeTarget && shouldBlockPanEvent({ target: nativeTarget })) return;
+          if (event.sourceEvent?.ctrlKey === false && event.type === "zoom") {
+            canvasWrapperRef.current?.classList.add(styles.panning);
+          }
+          const transform = event.transform;
+          const { x: translateX, y: translateY, k: scaleVal } = transform;
+          setZoomTransform({ translateX, translateY, scale: scaleVal });
+          if (isSafariClient && zoomContainerRef.current) {
+            (zoomContainerRef.current as HTMLElement).style.transform = `translate(${translateX}px, ${translateY}px) scale(${scaleVal})`;
+          } else {
+            zoomNodeSelection.attr("transform", `translate(${translateX},${translateY}) scale(${scaleVal})`);
+          }
+          if (onZoom) onZoom(event);
+        });
+
+      d3Zoom.on("end", () => {
+        isUserPressed.current = false;
+        canvasWrapperRef.current?.classList.remove(styles.panning);
+      });
+
+      // Override the default wheel event listener for the selection d3Zoom is attached to.
+      d3Selection.current.on("wheel.zoom", (event: any) => {
+        if (shouldBlockEvent({ ...event, target: event.target as HTMLElement })) {
+          return;
+        }
+        if (event.ctrlKey) {
+          event.preventDefault();
+          if (!d3Selection.current) return;
+          const currentZoom = d3Selection.current.property("__zoom").k || 1;
+          const nextZoom = currentZoom * 2 ** (-event.deltaY * 0.01);
+          // Pass the selection (d3Selection.current) to d3Zoom.scaleTo
+          d3Zoom.scaleTo(d3Selection.current as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>, nextZoom, pointer(event));
+        } else if (panOnScroll) {
+          event.preventDefault();
+          if (!d3Selection.current) return;
+          const scrollDeltaValue = { deltaX: event.deltaX, deltaY: event.deltaY };
+          scrollBarRef.current?.onScrollDeltaChangeHandler(scrollDeltaValue);
+          onScrollDeltaHandler(scrollDeltaValue);
+        } else {
+          event.preventDefault();
+          if (!d3Selection.current) return;
+          const currentZoom = d3Selection.current.property("__zoom").k || 1;
+          const nextZoom = currentZoom * 2 ** (-event.deltaY * 0.01);
+          // Pass the selection (d3Selection.current) to d3Zoom.scaleTo
+          d3Zoom.scaleTo(d3Selection.current as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>, nextZoom, pointer(event));
+        }
+      }, { passive: false, capture: true });
+
+      // Cleanup function
+      return () => {
+        if (d3Selection.current) {
+          d3Selection.current.on("wheel.zoom", null); // Remove our custom wheel handler from the selection
+        }
+        // Clear listeners from the d3Zoom behavior instance itself
+        // Pass a function that always returns true to effectively remove the filter's effect.
+        d3Zoom.on("zoom", null).on("end", null).filter(() => true);
+      };
+    }, [d3Zoom, onZoom, isSafariClient, panOnScroll, onMouseDown, onScrollDeltaHandler]); // Dependencies for the main D3 effect
+
+    // 3. useImperativeHandle must come after the functions it uses are defined.
+    useImperativeHandle(forwardedRef, () => ({
+      scrollNodeToCenter: (args) => scrollNodeHandler({ ...args, position: SCROLL_NODE_POSITIONS.CENTER_CENTER }),
+      scrollNodeHandler,
+      scrollContentHorizontallyCenter,
+      fitContentToView,
+      getCanvasState
+    }), [scrollNodeHandler, scrollContentHorizontallyCenter, fitContentToView, getCanvasState]);
+
+    // 4. useEffect for onCanvasMount should run after the imperative handle is set.
+    useEffect(() => {
+      onCanvasMount({
+        scrollNodeToCenter: (args) => scrollNodeHandler({ ...args, position: SCROLL_NODE_POSITIONS.CENTER_CENTER }),
+        scrollNodeHandler,
+        scrollContentHorizontallyCenter,
+        fitContentToView,
+        getCanvasState
+      });
+      // eslint-disable-next-line react-hooks/exhaustive-deps 
+    }, [onCanvasMount, scrollNodeHandler, scrollContentHorizontallyCenter, fitContentToView, getCanvasState]);
 
     return (
       <div className={styles.container}>
@@ -613,20 +500,20 @@ const ReactInfiniteCanvasRenderer = memo(
           ref={canvasWrapperRef}
           className={`${styles.canvasWrapper} ${className}`}
         >
-          {isSafari ? (
-            <div ref={canvasRef} className={styles.canvas}>
-              <div ref={zoomContainerRef}>
+          {isSafariClient ? (
+            <div ref={canvasRef as React.RefObject<HTMLDivElement>} className={styles.canvas}>
+              <div ref={zoomContainerRef as React.RefObject<HTMLDivElement>}>
                 <div className={styles.contentWrapper}>{children}</div>
               </div>
             </div>
           ) : (
             <svg
-              ref={canvasRef}
+              ref={canvasRef as React.RefObject<SVGSVGElement>}
               className={styles.canvas}
               aria-label="Infinite canvas"
               role="application"
             >
-              <g ref={zoomContainerRef}>
+              <g ref={zoomContainerRef as React.RefObject<SVGGElement>}>
                 <foreignObject
                   x={ZOOM_CONFIGS.INITIAL_POSITION_X}
                   y={ZOOM_CONFIGS.INITIAL_POSITION_Y}
