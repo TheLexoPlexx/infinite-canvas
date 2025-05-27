@@ -38,6 +38,7 @@ export interface ReactInfiniteCanvasProps {
   minZoom?: number;
   maxZoom?: number;
   panOnScroll?: boolean;
+  invertScroll?: boolean;
   zoomScaleFactor?: number;
   scrollBarConfig?: {
     renderScrollBar?: boolean;
@@ -171,6 +172,7 @@ const ReactInfiniteCanvasRenderer = memo(
     maxZoom = ZOOM_CONFIGS.DEFAULT_MAX_ZOOM,
     panOnScroll = true,
     zoomScaleFactor = 1,
+    invertScroll = false,
     customComponents = [],
     scrollBarConfig = {},
     backgroundConfig = {},
@@ -451,7 +453,8 @@ const ReactInfiniteCanvasRenderer = memo(
         } else {
           const currentZoom = d3Selection.current.property("__zoom").k || 1;
           const nextZoom = currentZoom * 2 ** (-event.deltaY * (0.01 * zoomScaleFactor));
-          d3Zoom.scaleTo(d3Selection.current as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>, nextZoom, pointer(event));
+          const realZoom = invertScroll ? 1 / nextZoom : nextZoom;
+          d3Zoom.scaleTo(d3Selection.current as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>, realZoom, pointer(event));
         }
       }, { passive: false, capture: true });
 
@@ -493,50 +496,56 @@ const ReactInfiniteCanvasRenderer = memo(
           ref={canvasWrapperRef}
           className={`${styles.canvasWrapper} ${className}`}
         >
-          {isSafariClient ? (
-            <div ref={canvasRef as React.RefObject<HTMLDivElement>} className={styles.canvas}>
-              <div ref={zoomContainerRef as React.RefObject<HTMLDivElement>}>
-                <div className={styles.contentWrapper}>{children}</div>
+          {
+            isSafariClient ? (
+              <div ref={canvasRef as React.RefObject<HTMLDivElement>} className={styles.canvas}>
+                <div ref={zoomContainerRef as React.RefObject<HTMLDivElement>}>
+                  <div className={styles.contentWrapper}>{children}</div>
+                </div>
               </div>
-            </div>
-          ) : (
-            <svg
-              ref={canvasRef as React.RefObject<SVGSVGElement>}
-              className={styles.canvas}
-              aria-label="Infinite canvas"
-              role="application"
-            >
-              <g ref={zoomContainerRef as React.RefObject<SVGGElement>}>
-                <foreignObject
-                  x={ZOOM_CONFIGS.INITIAL_POSITION_X}
-                  y={ZOOM_CONFIGS.INITIAL_POSITION_Y}
-                  width={ZOOM_CONFIGS.DEFAULT_LAYOUT}
-                  height={ZOOM_CONFIGS.DEFAULT_LAYOUT}
-                >
-                  {children}
-                </foreignObject>
-              </g>
-            </svg>
-          )}
+            ) : (
+              <svg
+                ref={canvasRef as React.RefObject<SVGSVGElement>}
+                className={styles.canvas}
+                aria-label="Infinite canvas"
+                role="application"
+              >
+                <g ref={zoomContainerRef as React.RefObject<SVGGElement>}>
+                  <foreignObject
+                    x={ZOOM_CONFIGS.INITIAL_POSITION_X}
+                    y={ZOOM_CONFIGS.INITIAL_POSITION_Y}
+                    width={ZOOM_CONFIGS.DEFAULT_LAYOUT}
+                    height={ZOOM_CONFIGS.DEFAULT_LAYOUT}
+                  >
+                    {children}
+                  </foreignObject>
+                </g>
+              </svg>
+            )
+          }
         </div>
-        {backgroundConfig.disable ? null : (
-          <Background
-            maxZoom={maxZoom}
-            zoomTransform={zoomTransform}
-            {...backgroundConfig}
-          />
-        )}
-        {scrollBarConfig.renderScrollBar && canvasWrapperRef.current && (
-          <ScrollBar
-            ref={scrollBarRef}
-            scale={zoomTransform.scale}
-            {...scrollBarConfig}
-            verticalOffsetHeight={canvasWrapperRef.current.offsetHeight}
-            horizontalOffsetWidth={canvasWrapperRef.current.offsetWidth}
-            getContainerOffset={getContainerOffset}
-            onScrollDeltaHandler={onScrollDeltaHandler}
-          />
-        )}
+        {
+          backgroundConfig.disable ? null : (
+            <Background
+              maxZoom={maxZoom}
+              zoomTransform={zoomTransform}
+              {...backgroundConfig}
+            />
+          )
+        }
+        {
+          scrollBarConfig.renderScrollBar && canvasWrapperRef.current && (
+            <ScrollBar
+              ref={scrollBarRef}
+              scale={zoomTransform.scale}
+              {...scrollBarConfig}
+              verticalOffsetHeight={canvasWrapperRef.current.offsetHeight}
+              horizontalOffsetWidth={canvasWrapperRef.current.offsetWidth}
+              getContainerOffset={getContainerOffset}
+              onScrollDeltaHandler={onScrollDeltaHandler}
+            />
+          )
+        }
         {customComponents.map((config) => {
           const {
             component,
