@@ -64,6 +64,8 @@ export interface ReactInfiniteCanvasProps {
   }>;
   onCanvasMount?: (functions: ReactInfiniteCanvasHandle) => void;
   onZoom?: (event: Event) => void;
+  enableArrowKeyPan?: boolean;
+  arrowKeyPanStep?: number;
 }
 
 export interface CanvasState {
@@ -179,7 +181,9 @@ const ReactInfiniteCanvasRenderer = memo(
     onCanvasMount = () => { },
     onZoom,
     forwardedRef,
-    contentWrapperRef
+    contentWrapperRef,
+    enableArrowKeyPan = false,
+    arrowKeyPanStep = 10
   }: ReactInfiniteCanvasRendererProps) => {
     const canvasWrapperRef = useRef<HTMLDivElement>(null);
     const canvasWrapperBounds = useRef<DOMRect | null>(null);
@@ -484,6 +488,44 @@ const ReactInfiniteCanvasRenderer = memo(
         }
       }, { passive: false, capture: true });
 
+      // Keyboard navigation logic
+      const handleKeyDown = (event: KeyboardEvent) => {
+        if (!enableArrowKeyPan || !d3Selection.current) return;
+
+        let dx = 0;
+        let dy = 0;
+
+        switch (event.key) {
+          case "ArrowUp":
+          case "k":
+            dy = arrowKeyPanStep;
+            break;
+          case "ArrowDown":
+          case "j":
+            dy = -arrowKeyPanStep;
+            break;
+          case "ArrowLeft":
+          case "h":
+            dx = arrowKeyPanStep;
+            break;
+          case "ArrowRight":
+          case "l":
+            dx = -arrowKeyPanStep;
+            break;
+          default:
+            return; // Not an arrow key
+        }
+
+        event.preventDefault();
+        d3Zoom.translateBy(d3Selection.current as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>, dx, dy);
+      };
+
+      if (enableArrowKeyPan) {
+        document.addEventListener("keydown", handleKeyDown);
+      } else {
+        document.removeEventListener("keydown", handleKeyDown);
+      }
+
       // Cleanup function
       return () => {
         if (d3Selection.current) {
@@ -492,8 +534,9 @@ const ReactInfiniteCanvasRenderer = memo(
         // Clear listeners from the d3Zoom behavior instance itself
         // Pass a function that always returns true to effectively remove the filter's effect.
         d3Zoom.on("zoom", null).on("end", null).filter(() => true);
+        document.removeEventListener("keydown", handleKeyDown); // Ensure listener is removed on unmount
       };
-    }, [d3Zoom, onZoom, isSafariClient, panOnScroll, onMouseDown, onScrollDeltaHandler, invertScroll, zoomScale]); // Added invertScroll and zoomScale to dependencies
+    }, [d3Zoom, onZoom, isSafariClient, panOnScroll, onMouseDown, onScrollDeltaHandler, invertScroll, zoomScale, enableArrowKeyPan, arrowKeyPanStep]); // Added invertScroll and zoomScale to dependencies
 
     // 3. useImperativeHandle must come after the functions it uses are defined.
     useImperativeHandle(forwardedRef, () => ({
