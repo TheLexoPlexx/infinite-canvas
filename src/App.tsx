@@ -64,6 +64,11 @@ export interface ReactInfiniteCanvasProps {
   }>;
   onCanvasMount?: (functions: ReactInfiniteCanvasHandle) => void;
   onZoom?: (event: Event) => void;
+  enableArrowKeyPan?: boolean;
+  arrowKeyPanStep?: number;
+  mouseWheelSensitivityFactor?: number;
+  touchpadSensitivityFactor?: number;
+  pixelDeltaThresholdForMouseWheelDetection?: number;
 }
 
 export interface CanvasState {
@@ -179,7 +184,12 @@ const ReactInfiniteCanvasRenderer = memo(
     onCanvasMount = () => { },
     onZoom,
     forwardedRef,
-    contentWrapperRef
+    contentWrapperRef,
+    enableArrowKeyPan = false,
+    arrowKeyPanStep = 10,
+    mouseWheelSensitivityFactor = 0.2,
+    touchpadSensitivityFactor = 2.0,
+    pixelDeltaThresholdForMouseWheelDetection = 50
   }: ReactInfiniteCanvasRendererProps) => {
     const canvasWrapperRef = useRef<HTMLDivElement>(null);
     const canvasWrapperBounds = useRef<DOMRect | null>(null);
@@ -456,9 +466,34 @@ const ReactInfiniteCanvasRenderer = memo(
           return;
         }
 
-        const effectiveDeltaY = invertScroll ? event.deltaY : -event.deltaY;
-        const effectiveDeltaX = invertScroll ? event.deltaX : -event.deltaX;
-        const zoomScaleFactor = zoomScale * 0.01;
+        let deltaX = event.deltaX;
+        let deltaY = event.deltaY;
+        const deltaMode = event.deltaMode;
+
+        // Normalize delta values to pixels if they are in lines or pages
+        // Common values: DOM_DELTA_PIXEL (0), DOM_DELTA_LINE (1), DOM_DELTA_PAGE (2)
+        if (deltaMode === 1) { // DOM_DELTA_LINE
+          deltaX *= 16; // Approximate line height
+          deltaY *= 16;
+        } else if (deltaMode === 2) { // DOM_DELTA_PAGE
+          deltaX *= (canvasRef.current?.clientWidth || 800);
+          deltaY *= (canvasRef.current?.clientHeight || 600);
+        }
+
+        // Heuristic to differentiate mouse wheel from touchpad
+        // Touchpads often report deltaMode = 0 (pixels) with small, frequent deltaY values.
+        // Mice with high-resolution wheels also report deltaMode = 0 but with larger deltaY values.
+        // Standard mice usually report deltaMode = 1 (lines).
+        let sensitivityFactor = touchpadSensitivityFactor;
+        if (deltaMode === 1 || (deltaMode === 0 && Math.abs(event.deltaY) > pixelDeltaThresholdForMouseWheelDetection)) {
+          // Treat as mouse wheel if deltaMode is line OR if it's pixel mode with a large enough original deltaY
+          sensitivityFactor = mouseWheelSensitivityFactor;
+        }
+
+        const effectiveDeltaY = (invertScroll ? deltaY : -deltaY) * sensitivityFactor;
+        const effectiveDeltaX = (invertScroll ? deltaX : -deltaX) * sensitivityFactor;
+
+        const zoomScaleFactor = zoomScale * 0.01; // zoomScale is a percentage, convert to fraction
 
         if (event.ctrlKey) {
           event.preventDefault();
@@ -478,11 +513,50 @@ const ReactInfiniteCanvasRenderer = memo(
           event.preventDefault();
           if (!d3Selection.current) return;
           const currentZoom = d3Selection.current.property("__zoom").k || 1;
-          // Use effectiveDeltaY for zoom calculation
-          const nextZoom = currentZoom * 2 ** (-effectiveDeltaY * zoomScaleFactor);
+          // Use effectiveDeltaY for zoom calculation (default behavior when not panning on scroll)
+          const nextZoom = currentZoom * 2 ** (-effectiveDeltaY * zoomScaleFactor); // ensure effectiveDeltaY is used
           d3Zoom.scaleTo(d3Selection.current as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>, nextZoom, pointer(event));
         }
       }, { passive: false, capture: true });
+
+      // Keyboard navigation logic
+      const handleKeyDown = (event: KeyboardEvent) => {
+        if (!enableArrowKeyPan || !d3Selection.current) { return };
+        if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) { return; }
+
+        let dx = 0;
+        let dy = 0;
+
+        switch (event.key) {
+          case "ArrowUp":
+          case "k":
+            dy = arrowKeyPanStep;
+            break;
+          case "ArrowDown":
+          case "j":
+            dy = -arrowKeyPanStep;
+            break;
+          case "ArrowLeft":
+          case "h":
+            dx = arrowKeyPanStep;
+            break;
+          case "ArrowRight":
+          case "l":
+            dx = -arrowKeyPanStep;
+            break;
+          default:
+            return; // Not an arrow key
+        }
+
+        event.preventDefault();
+        d3Zoom.translateBy(d3Selection.current as Selection<SVGSVGElement | HTMLDivElement, unknown, null, undefined>, dx, dy);
+      };
+
+      if (enableArrowKeyPan) {
+        document.addEventListener("keydown", handleKeyDown);
+      } else {
+        document.removeEventListener("keydown", handleKeyDown);
+      }
 
       // Cleanup function
       return () => {
@@ -492,8 +566,9 @@ const ReactInfiniteCanvasRenderer = memo(
         // Clear listeners from the d3Zoom behavior instance itself
         // Pass a function that always returns true to effectively remove the filter's effect.
         d3Zoom.on("zoom", null).on("end", null).filter(() => true);
+        document.removeEventListener("keydown", handleKeyDown); // Ensure listener is removed on unmount
       };
-    }, [d3Zoom, onZoom, isSafariClient, panOnScroll, onMouseDown, onScrollDeltaHandler, invertScroll, zoomScale]); // Added invertScroll and zoomScale to dependencies
+    }, [d3Zoom, onZoom, isSafariClient, panOnScroll, onMouseDown, onScrollDeltaHandler, invertScroll, zoomScale, enableArrowKeyPan, arrowKeyPanStep, mouseWheelSensitivityFactor, touchpadSensitivityFactor, pixelDeltaThresholdForMouseWheelDetection]); // Added invertScroll and zoomScale to dependencies
 
     // 3. useImperativeHandle must come after the functions it uses are defined.
     useImperativeHandle(forwardedRef, () => ({
