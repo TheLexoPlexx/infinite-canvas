@@ -11,7 +11,7 @@
   height: 100%;
   overflow: hidden;
   background-color: var(--kf-color-bg-gray);
-  cursor: grab;
+  cursor: all-scroll;
   -webkit-user-select: none;
   -moz-user-select: none;
   -ms-user-select: none;
@@ -29,7 +29,7 @@
   height: 100%;
 }
 
-.canvas > div:first-of-type {
+.canvas>div:first-of-type {
   position: absolute;
   inset-inline-start: 0;
   inset-block-start: 0;

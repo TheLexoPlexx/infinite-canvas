@@ -266,18 +266,41 @@ const ReactInfiniteCanvasRenderer = memo(
             const contentBounds = flowRendererRef.current.getBoundingClientRect();
             const currentZoom = d3Selection.current.property("__zoom").k || 1;
             const containerBounds = canvasRef.current?.getBoundingClientRect();
+
+            // NEU: Überprüfen, ob die rohen contentBounds 0x0 sind
+            const isTrulyEmptyContent = contentBounds.width === 0 && contentBounds.height === 0;
+
             const { width: containerWidth = 0, height: containerHeight = 0 } = containerBounds || {};
             const scaleDiff = 1 / currentZoom;
             const contentWidth = contentBounds.width * scaleDiff;
             const contentHeight = contentBounds.height * scaleDiff;
-            const heightRatio = containerHeight / contentHeight;
-            const widthRatio = containerWidth / contentWidth;
+
             const newScale =
               scale ??
-              clampValue({ value: Math.min(maxZoomLimit, Math.min(heightRatio, widthRatio)), min: minZoom, max: maxZoom });
+              clampValue({ value: Math.min(maxZoomLimit, Math.min(containerHeight / contentHeight, containerWidth / contentWidth)), min: minZoom, max: maxZoom });
             const newWidth = containerWidth - contentWidth * newScale;
             const newHeight = containerHeight - contentHeight * newScale;
-            const canCenterVertically = !disableVerticalCenter && heightRatio > widthRatio;
+
+            // NEU: Modifizierte Logik für canCenterVertically
+            let canCenterVerticallyLogic = false;
+            if (!disableVerticalCenter) {
+              if (isTrulyEmptyContent) {
+                canCenterVerticallyLogic = true; // Immer zentrieren, wenn der Inhalt 0x0 ist
+              } else {
+                const heightRatio = containerHeight / contentHeight;
+                const widthRatio = containerWidth / contentWidth;
+                // Die ursprüngliche Logik, aber sicherstellen, dass Verhältnisse endlich sind
+                if (isFinite(heightRatio) && isFinite(widthRatio)) {
+                  canCenterVerticallyLogic = heightRatio > widthRatio;
+                } else if (contentWidth === 0 && contentHeight > 0) { // Vertikale Linie
+                  canCenterVerticallyLogic = false; // Oben ausrichten
+                } else if (contentHeight === 0 && contentWidth > 0) { // Horizontale Linie
+                  canCenterVerticallyLogic = true; // Vertikal zentrieren
+                }
+              }
+            }
+            const canCenterVertically = canCenterVerticallyLogic;
+
             const baseTranslateX = newWidth / 2;
             const baseTranslateY = canCenterVertically ? newHeight / 2 : 0;
             const translateX = baseTranslateX + offset.x;
@@ -613,8 +636,8 @@ const ReactInfiniteCanvasRenderer = memo(
               >
                 <g ref={zoomContainerRef as React.RefObject<SVGGElement>}>
                   <foreignObject
-                    x={ZOOM_CONFIGS.INITIAL_POSITION_X}
-                    y={ZOOM_CONFIGS.INITIAL_POSITION_Y}
+                    x={ZOOM_CONFIGS.INITIAL_POSITION_X - ZOOM_CONFIGS.DEFAULT_LAYOUT / 2}
+                    y={ZOOM_CONFIGS.INITIAL_POSITION_Y - ZOOM_CONFIGS.DEFAULT_LAYOUT / 2}
                     width={ZOOM_CONFIGS.DEFAULT_LAYOUT}
                     height={ZOOM_CONFIGS.DEFAULT_LAYOUT}
                   >
